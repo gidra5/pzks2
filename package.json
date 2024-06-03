@@ -1,0 +1,25 @@
+{
+  "name": "pzks2",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@solidjs/router": "^0.13.5",
+    "immer": "^10.1.1",
+    "solid-icons": "^1.1.0",
+    "solid-js": "^1.8.17",
+    "solid-zustand": "^1.8.1",
+    "vis-network": "^9.1.9",
+    "zustand": "^4.5.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "vite": "^5.2.12",
+    "vite-plugin-solid": "^2.10.2"
+  }
+}
