@@ -13,6 +13,7 @@ export interface Task {
   weight: number;
   type: TaskType;
 
+  edgeWeights: number[];
   children: number[];
   parents: number[];
 }
@@ -30,12 +31,8 @@ interface State {
   task: Task[];
   worker: StateWorker[];
 
-  addTask: (task: Task) => void;
-  addWorker: (worker: StateWorker) => void;
-  removeTask: (id: number) => void;
-  removeWorker: (id: number) => void;
-  connectTask: (parentId: number, childId: number) => void;
-  connectWorker: (parentId: number, childId: number) => void;
+  setTask: (task: Task[]) => void;
+  setWorker: (worker: StateWorker[]) => void;
 }
 
 export const useStore = createWithSignal(
@@ -44,49 +41,15 @@ export const useStore = createWithSignal(
       task: [],
       worker: [],
 
-      addTask(task) {
+      setTask(task) {
         set((state) => {
-          state.task.push(task);
+          state.task = task;
         });
       },
 
-      addWorker(worker) {
+      setWorker(worker) {
         set((state) => {
-          state.worker.push(worker);
-        });
-      },
-
-      removeTask(id) {
-        set((state) => {
-          state.task = state.task.filter((task) => task.id !== id);
-        });
-      },
-
-      removeWorker(id) {
-        set((state) => {
-          state.worker = state.worker.filter((worker) => worker.id !== id);
-        });
-      },
-
-      connectTask(parentId, childId) {
-        set((state) => {
-          const parent = state.task.find((task) => task.id === parentId);
-          const child = state.task.find((task) => task.id === childId);
-          if (parent && child) {
-            parent.children.push(child.id);
-            child.parents.push(parent.id);
-          }
-        });
-      },
-
-      connectWorker(parentId, childId) {
-        set((state) => {
-          const parent = state.worker.find((worker) => worker.id === parentId);
-          const child = state.worker.find((worker) => worker.id === childId);
-          if (parent && child) {
-            parent.children.push(child.id);
-            child.parents.push(parent.id);
-          }
+          state.worker = worker;
         });
       },
     })),

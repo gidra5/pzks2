@@ -1,0 +1,13 @@
+
+.active {
+  color: #000
+}
+
+.inactive {
+  transition: all 0.1s ease;
+  color: #888
+}
+
+.inactive:hover {
+  color: #555
+}
