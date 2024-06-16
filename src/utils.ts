@@ -4,7 +4,7 @@ export function assert(condition: any, message: string): asserts condition {
   }
 }
 
-type GraphNode = {
+export type GraphNode = {
   id: number;
   weight: number;
   edgeWeights: number[]; // edgeWeights[i] is the weight of the edge from this node to children[i]

@@ -3,7 +3,7 @@ import { type Edge, type Node } from "vis-network";
 import { Network } from "vis-network/esnext";
 import { DataSet } from "vis-network/standalone";
 import "vis-network/styles/vis-network.css";
-import { assert, findNode, isAcyclic, isConnected, uniqueId, type Graph } from "./utils";
+import { assert, findNode, isAcyclic, isConnected, uniqueId, type Graph, type GraphNode } from "./utils";
 import { AiOutlinePlus, AiOutlineSave, AiOutlineUpload } from "solid-icons/ai";
 
 type Props = {
@@ -22,6 +22,13 @@ export default function GraphEditor(props: Props) {
   const [graph, setGraph] = createSignal<Graph>(props.initialValue ?? []);
   const _isAcyclic = createMemo(() => isAcyclic(graph()));
   const _isConnected = createMemo(() => isConnected(graph()));
+  // const [sorting, setSorting] = createSignal("critTime");
+  // const graphOrder = createMemo(() => {
+  //   const _graph = graph();
+  //   return sortGraph(sorting())(_graph)
+  //     .map(({ id }) => id)
+  //     .join(", ");
+  // });
   const graphOrder = createMemo(() =>
     graph()
       .map(({ id }) => id)
@@ -109,6 +116,7 @@ export default function GraphEditor(props: Props) {
           const fromNode = findNode(graph, Number(fromId));
           const toNode = findNode(graph, Number(toId));
           if (fromNode && toNode) {
+            // const fromNodeChildren = [...fromNode.children, toNode.id];
             fromNode.children.push(toNode.id);
             toNode.parents.push(fromNode.id);
 
@@ -201,14 +209,20 @@ export default function GraphEditor(props: Props) {
   const setEdgeWeight = (weight: number) => {
     const [from, to = from] = selectedNodes();
     const id = `${from}-${to}`;
-    const fromNode = findNode(graph(), from);
-    assert(fromNode, `From node id ${from} not found`);
-    const childIndex = fromNode.children.indexOf(to);
-    assert(childIndex !== -1, `Child node id ${to} not found in from node ${from}`);
-
     edges.update({ id, arrows: "to", label: String(weight) });
-    fromNode.edgeWeights[childIndex] = weight;
-    setGraph(([...graph]) => graph);
+    setGraph(([...graph]) => {
+      const fromNode = findNode(graph, from);
+      assert(fromNode, `From node id ${from} not found`);
+      const childIndex = fromNode.children.indexOf(to);
+      assert(childIndex !== -1, `Child node id ${to} not found in from node ${from}`);
+      const edgeWeights = [...fromNode.edgeWeights];
+      fromNode.edgeWeights[childIndex] = weight;
+
+      const index = graph.indexOf(fromNode);
+      graph[index] = { ...fromNode, edgeWeights };
+
+      return graph;
+    });
 
     network.unselectAll();
     setSelectedNodes([]);
@@ -217,12 +231,15 @@ export default function GraphEditor(props: Props) {
 
   const setNodeWeight = (weight: number) => {
     const [nodeId] = selectedNodes();
-    const node = findNode(graph(), nodeId);
-    assert(node, `Node id ${nodeId} not found`);
-
     nodes.update({ id: nodeId, label: `${nodeId} (${weight})` });
-    node.weight = weight;
-    setGraph(([...graph]) => graph);
+    setGraph(([...graph]) => {
+      const node = findNode(graph, nodeId);
+      assert(node, `Node id ${nodeId} not found`);
+      const index = graph.indexOf(node);
+
+      graph[index] = { ...node, weight };
+      return graph;
+    });
 
     network.unselectAll();
     setSelectedNodes([]);
@@ -237,32 +254,87 @@ export default function GraphEditor(props: Props) {
   };
 
   const sortGraph = (sortType: string) => {
+    console.log("sortType", sortType);
+
     if (sortType === "critTime") {
-      const sortedGraph = graph().sort((a, b) => {
-        return a.parents.length - b.parents.length;
-      });
-      setGraph(sortedGraph);
+      return ([...graph]) => {
+        function time(node: GraphNode): number {
+          const childrenTimes = node.children.map((id) => {
+            const child = findNode(graph, id);
+            assert(child, `Child node id ${id} not found`);
+            return time(child);
+          });
+          return node.weight + Math.min(...childrenTimes, 0);
+        }
+        console.log("unsorted graph", graph);
+
+        graph.sort((a, b) => {
+          return time(b) - time(a);
+        });
+        console.log("sorted graph", graph);
+
+        return graph;
+      };
     }
 
     if (sortType === "critPathFirstThenDescCritPathCount") {
-      const sortedGraph = graph().sort((a, b) => {
-        if (a.parents.length === 0 && b.parents.length > 0) {
-          return -1;
+      return ([...graph]) => {
+        function findPaths(node: GraphNode): GraphNode[][] {
+          const paths = [];
+          if (node.children.length === 0) {
+            return [[node]];
+          }
+
+          for (const id of node.children) {
+            const child = findNode(graph, id);
+            assert(child, `Child node id ${id} not found`);
+            const childPaths = findPaths(child);
+            for (const path of childPaths) {
+              paths.push([node, ...path]);
+            }
+          }
+
+          return paths;
         }
-        if (a.parents.length > 0 && b.parents.length === 0) {
-          return 1;
+        const criticalPath = findPaths(graph[0]).reduce((acc, path) => {
+          if (path.length > acc.length) {
+            return path;
+          }
+          return acc;
+        });
+
+        function count(node: GraphNode): number {
+          const childrenCounts = node.children.map((id, i) => {
+            const child = findNode(graph, id);
+            assert(child, `Child node id ${id} not found`);
+            return count(child);
+          });
+          return 1 + Math.max(...childrenCounts);
         }
-        return b.parents.length - a.parents.length;
-      });
-      setGraph(sortedGraph);
+
+        graph.sort((a, b) => {
+          if (criticalPath.includes(a) && !criticalPath.includes(b)) {
+            return -1;
+          }
+          if (!criticalPath.includes(a) && criticalPath.includes(b)) {
+            return 1;
+          }
+          return count(b) - count(a);
+        });
+
+        return graph;
+      };
     }
 
     if (sortType === "weightDescending") {
-      const sortedGraph = graph().sort((a, b) => {
-        return b.weight - a.weight;
-      });
-      setGraph(sortedGraph);
+      return ([...graph]) => {
+        graph.sort((a, b) => {
+          return b.weight - a.weight;
+        });
+        return graph;
+      };
     }
+    throw new Error(`Unknown sort type: ${sortType}`);
   };
 
   const _setWeight = () => {
@@ -272,13 +344,41 @@ export default function GraphEditor(props: Props) {
     setWeightModal(false);
   };
 
+  const load = async () => {
+    const file = await new Promise<File>((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".json";
+      input.onchange = () => input.files && resolve(input.files?.[0]);
+      input.click();
+    });
+    const text = await file.text();
+    const data = JSON.parse(text);
+    nodes.clear();
+    edges.clear();
+
+    nodes.add(data.nodes);
+    edges.add(data.edges);
+  };
+
+  const save = () => {
+    const data = JSON.stringify({ nodes: nodes.get(), edges: edges.get() });
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "graph.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
       <div style={{ display: "flex", "flex-direction": "row", gap: "8px" }}>
-        <button onClick={() => console.log("save")} style={{ height: "24px" }}>
+        <button onClick={save} style={{ height: "24px" }}>
           <AiOutlineSave size={24} />
         </button>
-        <button onClick={() => console.log("load")} style={{ height: "24px" }}>
+        <button onClick={load} style={{ height: "24px" }}>
           <AiOutlineUpload size={24} />
         </button>
         <button onClick={addNode}>add node</button>
@@ -291,12 +391,13 @@ export default function GraphEditor(props: Props) {
         <div>Acyclic: {_isAcyclic().toString()}</div>
         <div>Connected: {_isConnected().toString()}</div>
       </div>
-      <select onChange={(e) => sortGraph(e.target.value)}>
-        <option value="critTime">Sort by Critical Time Descending</option>
+      {/* <select value={sorting()} onChange={(e) => setSorting(e.target.value)}> */}
+      <select onChange={(e) => setGraph(sortGraph(e.target.value))}>
+        <option value="critTime">Сортування по критичному часу по спаданню</option>
         <option value="critPathFirstThenDescCritPathCount">
           Sort by Critical Path First, then by Critical Path Count (Descending)
         </option>
-        <option value="weightDescending">Sort by Weight Descending</option>
+        <option value="weightDescending">Сортування за вагою по спаданню</option>
       </select>
       <div>
         <span>Sorted: </span>
