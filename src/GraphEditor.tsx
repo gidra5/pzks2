@@ -4,7 +4,7 @@ import { Network } from "vis-network/esnext";
 import { DataSet } from "vis-network/standalone";
 import "vis-network/styles/vis-network.css";
 import { assert, findNode, isAcyclic, isConnected, uniqueId, type Graph, type GraphNode } from "./utils";
-import { AiOutlinePlus, AiOutlineSave, AiOutlineUpload } from "solid-icons/ai";
+import { AiOutlineSave, AiOutlineUpload } from "solid-icons/ai";
 
 type Props = {
   directed?: boolean;
