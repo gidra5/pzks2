@@ -1,36 +1,120 @@
-import { createEffect, createMemo, createSignal, type Setter } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, type ComponentProps } from "solid-js";
 import { type Edge, type Node } from "vis-network";
 import { Network } from "vis-network/esnext";
 import { DataSet } from "vis-network/standalone";
 import "vis-network/styles/vis-network.css";
 import { assert, findNode, isAcyclic, isConnected, uniqueId, type Graph, type GraphNode } from "./utils";
 import { AiOutlineSave, AiOutlineUpload } from "solid-icons/ai";
+import { createShortcut } from "@solid-primitives/keyboard";
+import { produce } from "immer";
 
 type Props = {
   directed?: boolean;
-  initialValue?: Graph;
-  onChange?: Setter<Graph>;
+  onChange?: (value: Graph) => void;
 };
+
+enum SortingAlgorithm {
+  CRIT_TIME,
+  CRIT_PATH_FIRST_THEN_DESC_CRIT_PATH_COUNT,
+  WEIGHT_DESCENDING,
+}
+
+const sortGraph = (sortType: SortingAlgorithm, graph: Graph) => {
+  if (sortType === SortingAlgorithm.CRIT_TIME) {
+    sortGraphByCritTime(graph);
+  } else if (sortType === SortingAlgorithm.CRIT_PATH_FIRST_THEN_DESC_CRIT_PATH_COUNT) {
+    sortGraphByCriticalPath(graph);
+  } else if (sortType === SortingAlgorithm.WEIGHT_DESCENDING) {
+    sortGraphByWeight(graph);
+  }
+};
+
+function sortGraphByWeight(graph: Graph) {
+  graph.sort((a, b) => {
+    return b.weight - a.weight;
+  });
+}
+
+function sortGraphByCriticalPath(graph: Graph) {
+  function findPaths(node: GraphNode): GraphNode[][] {
+    const paths = [];
+    if (node.children.length === 0) {
+      return [[node]];
+    }
+
+    for (const id of node.children) {
+      const child = findNode(graph, id);
+      assert(child, `Child node id ${id} not found`);
+      const childPaths = findPaths(child);
+      for (const path of childPaths) {
+        paths.push([node, ...path]);
+      }
+    }
+
+    return paths;
+  }
+
+  const criticalPath = findPaths(graph[0]).reduce((acc, path) => {
+    if (path.length > acc.length) {
+      return path;
+    }
+    return acc;
+  });
+
+  function count(node: GraphNode): number {
+    const childrenCounts = node.children.map((id, i) => {
+      const child = findNode(graph, id);
+      assert(child, `Child node id ${id} not found`);
+      return count(child);
+    });
+    return 1 + Math.max(...childrenCounts);
+  }
+
+  graph.sort((a, b) => {
+    if (criticalPath.includes(a) && !criticalPath.includes(b)) {
+      return -1;
+    }
+    if (!criticalPath.includes(a) && criticalPath.includes(b)) {
+      return 1;
+    }
+    return count(b) - count(a);
+  });
+}
+
+function sortGraphByCritTime(graph: Graph) {
+  function time(node: GraphNode): number {
+    const childrenTimes = node.children.map((id) => {
+      const child = findNode(graph, id);
+      assert(child, `Child node id ${id} not found`);
+      return time(child);
+    });
+    return node.weight + Math.min(...childrenTimes, 0);
+  }
+  graph.sort((a, b) => {
+    return time(b) - time(a);
+  });
+}
 
 export default function GraphEditor(props: Props) {
   const directed = () => props.directed ?? false;
+
   let ref: any;
   let network: Network;
   let nodes: DataSet<Node>;
   let edges: DataSet<Edge>;
 
-  const [graph, setGraph] = createSignal<Graph>(props.initialValue ?? []);
+  const [graph, setGraph] = createSignal<Graph>([]);
+  createEffect(() => {
+    props.onChange?.(graph());
+  });
+
   const _isAcyclic = createMemo(() => isAcyclic(graph()));
   const _isConnected = createMemo(() => isConnected(graph()));
-  // const [sorting, setSorting] = createSignal("critTime");
-  // const graphOrder = createMemo(() => {
-  //   const _graph = graph();
-  //   return sortGraph(sorting())(_graph)
-  //     .map(({ id }) => id)
-  //     .join(", ");
-  // });
+
+  const [sorting, setSorting] = createSignal(SortingAlgorithm.CRIT_TIME);
+  const sortedGraph = createMemo(() => produce(graph(), (graph) => void (_isAcyclic() && sortGraph(sorting(), graph))));
   const graphOrder = createMemo(() =>
-    graph()
+    sortedGraph()
       .map(({ id }) => id)
       .join(", ")
   );
@@ -41,16 +125,26 @@ export default function GraphEditor(props: Props) {
   const [weight, setWeight] = createSignal(0);
 
   createEffect(() => {
-    props.onChange?.(graph());
-  });
-
-  createEffect(() => {
     // create a network
     var container = ref;
     var options = {
+      layout: {
+        // improvedLayout: true,
+        hierarchical: {
+          enabled: true,
+          levelSeparation: 100,
+          nodeSpacing: 100,
+          treeSpacing: 200,
+          blockShifting: false,
+          edgeMinimization: false,
+          parentCentralization: false,
+          direction: "UD", // UD, DU, LR, RL
+          sortMethod: "directed",
+          shakeTowards: "roots",
+        },
+      },
+
       interaction: { hover: true, multiselect: true },
-      // manipulation: { enabled: true, initiallyActive: true },
-      // configure: { enabled: true },
       edges: {
         arrows: {
           to: { enabled: directed(), scaleFactor: 0.8 },
@@ -84,7 +178,6 @@ export default function GraphEditor(props: Props) {
     });
 
     nodes.on("add", (_, properties, senderId) => {
-      console.log("node added", properties, senderId);
       const ids = properties?.items.filter((id): id is string | number => id !== undefined && id !== null);
       if (!ids) return;
       const nodes = ids.map((id) => ({ id: Number(id), weight: 0, edgeWeights: [], parents: [], children: [] }));
@@ -92,74 +185,75 @@ export default function GraphEditor(props: Props) {
     });
 
     nodes.on("remove", (_, properties, senderId) => {
-      console.log("node removed", properties, senderId);
       const ids = properties?.items;
       if (!ids) return;
+      if (ids.length === 0) return;
+
       setGraph((graph) => graph.filter((node) => !ids.includes(node.id)));
     });
 
-    nodes.on("update", (_, properties, senderId) => {
-      console.log("node updated", properties, senderId);
-    });
+    nodes.on("update", (_, properties, senderId) => {});
 
     edges.on("add", (_, properties, senderId) => {
-      console.log("edge added", properties, senderId);
       const ids = properties?.items.filter((id): id is string | number => id !== undefined && id !== null);
       if (!ids) return;
 
-      setGraph(([...graph]) => {
-        for (let edge of edges.get(ids)) {
-          const fromId = edge.from;
-          const toId = edge.to;
-          if (fromId === undefined || toId === undefined || fromId === null || toId === null) continue;
+      setGraph(
+        produce((graph) => {
+          for (let edge of edges.get(ids)) {
+            const fromId = edge.from;
+            const toId = edge.to;
+            if (fromId === undefined || toId === undefined) continue;
+            if (fromId === null || toId === null) continue;
 
-          const fromNode = findNode(graph, Number(fromId));
-          const toNode = findNode(graph, Number(toId));
-          if (fromNode && toNode) {
-            // const fromNodeChildren = [...fromNode.children, toNode.id];
+            const fromNode = findNode(graph, Number(fromId));
+            const toNode = findNode(graph, Number(toId));
+            if (!fromNode || !toNode) continue;
+
             fromNode.children.push(toNode.id);
             toNode.parents.push(fromNode.id);
 
-            if (!directed()) {
-              toNode.children.push(fromNode.id);
-              fromNode.parents.push(toNode.id);
-            }
-          }
-        }
+            if (directed()) continue;
 
-        return graph;
-      });
+            toNode.children.push(fromNode.id);
+            fromNode.parents.push(toNode.id);
+          }
+        })
+      );
     });
 
     edges.on("remove", (_, properties, senderId) => {
-      console.log("edge removed", properties, senderId);
-      const ids = properties?.items;
-      if (!ids) return;
+      const edges = properties?.oldData;
+      if (!edges) return;
+      if (edges.length === 0) return;
 
-      setGraph(([...graph]) => {
-        for (let edge of edges.get(ids)) {
-          const fromId = edge.from;
-          const toId = edge.to;
-          if (fromId === undefined || toId === undefined || fromId === null || toId === null) continue;
+      setGraph(
+        produce((graph) => {
+          for (let edge of edges) {
+            const fromId = edge.from;
+            const toId = edge.to;
+            if (fromId === undefined || toId === undefined) continue;
+            if (fromId === null || toId === null) continue;
 
-          const fromNode = findNode(graph, Number(fromId));
-          const toNode = findNode(graph, Number(toId));
-          if (fromNode && toNode) {
+            const fromNode = findNode(graph, Number(fromId));
+            const toNode = findNode(graph, Number(toId));
+            if (!fromNode || !toNode) continue;
+
             fromNode.children = fromNode.children.filter((id) => id !== toNode.id);
             toNode.parents = toNode.parents.filter((id) => id !== fromNode.id);
+
+            if (directed()) continue;
 
             toNode.children = toNode.children.filter((id) => id !== fromNode.id);
             fromNode.parents = fromNode.parents.filter((id) => id !== toNode.id);
           }
-        }
-
-        return graph;
-      });
+        })
+      );
     });
   });
 
   const addNode = () => {
-    const newNodeId = uniqueId();
+    const newNodeId = Math.max(...graph().map(({ id }) => id + 1), uniqueId());
     nodes.add({
       id: newNodeId,
       label: `${newNodeId}`,
@@ -171,15 +265,19 @@ export default function GraphEditor(props: Props) {
     if (directed()) setWeightModal(true);
   };
 
-  const removeNode = () => {
-    for (const nodeId of selectedNodes()) {
-      const edgesToRemove = edges.get().filter(({ from, to }) => from === nodeId || to === nodeId);
-      edges.remove(edgesToRemove.map(({ id }) => id));
-    }
-    nodes.remove(selectedNodes());
-    network.unselectAll();
-    setSelectedNodes([]);
-  };
+  const removeNode = () =>
+    batch(() => {
+      const _nodes = selectedNodes();
+      if (_nodes.length === 0) return;
+
+      for (const nodeId of _nodes) {
+        const edgesToRemove = edges.get().filter(({ from, to }) => from === nodeId || to === nodeId);
+        edges.remove(edgesToRemove.map(({ id }) => id));
+      }
+      nodes.remove(_nodes);
+      network.unselectAll();
+      setSelectedNodes([]);
+    });
 
   const addEdge = () => {
     if (selectedNodes().length !== 2 && selectedNodes().length !== 1) {
@@ -188,7 +286,7 @@ export default function GraphEditor(props: Props) {
     }
 
     const [from, to = from] = selectedNodes();
-    const id = `${from}-${to}`;
+    const id = `${from}-${to}-${uniqueId()}`;
     edges.add({ id, from, to });
 
     setSelectedEdges([id]);
@@ -200,29 +298,37 @@ export default function GraphEditor(props: Props) {
     setSelectedNodes([]);
   };
 
-  const removeEdge = () => {
-    edges.remove(selectedEdges());
-    network.unselectAll();
-    setSelectedEdges([]);
+  const removeEdge = () =>
+    batch(() => {
+      edges.remove(selectedEdges());
+      network.unselectAll();
+      setSelectedEdges([]);
+    });
+
+  const removeSelection = () => {
+    removeEdge();
+    removeNode();
   };
 
   const setEdgeWeight = (weight: number) => {
-    const [from, to = from] = selectedNodes();
-    const id = `${from}-${to}`;
-    edges.update({ id, arrows: "to", label: String(weight) });
-    setGraph(([...graph]) => {
-      const fromNode = findNode(graph, from);
-      assert(fromNode, `From node id ${from} not found`);
-      const childIndex = fromNode.children.indexOf(to);
-      assert(childIndex !== -1, `Child node id ${to} not found in from node ${from}`);
-      const edgeWeights = [...fromNode.edgeWeights];
-      fromNode.edgeWeights[childIndex] = weight;
+    const [id] = selectedEdges();
+    const edge = edges.get(id);
+    assert(edge, `Edge id ${id} not found`);
 
-      const index = graph.indexOf(fromNode);
-      graph[index] = { ...fromNode, edgeWeights };
+    const { from, to } = edge;
+    assert(typeof from === "number", `From node id ${from} is not a number`);
+    assert(typeof to === "number", `To node id ${to} is not a number`);
 
-      return graph;
-    });
+    edges.update({ id, arrows: "to", value: weight, label: String(weight) });
+    setGraph(
+      produce((graph) => {
+        const fromNode = findNode(graph, from);
+        assert(fromNode, `From node id ${from} not found`);
+        const childIndex = fromNode.children.indexOf(to);
+        assert(childIndex !== -1, `Child node id ${to} not found in from node ${from}`);
+        fromNode.edgeWeights[childIndex] = weight;
+      })
+    );
 
     network.unselectAll();
     setSelectedNodes([]);
@@ -231,118 +337,43 @@ export default function GraphEditor(props: Props) {
 
   const setNodeWeight = (weight: number) => {
     const [nodeId] = selectedNodes();
-    nodes.update({ id: nodeId, label: `${nodeId} (${weight})` });
-    setGraph(([...graph]) => {
-      const node = findNode(graph, nodeId);
-      assert(node, `Node id ${nodeId} not found`);
-      const index = graph.indexOf(node);
-
-      graph[index] = { ...node, weight };
-      return graph;
-    });
+    nodes.update({ id: nodeId, value: weight, label: `${nodeId} (${weight})` });
+    setGraph(
+      produce((graph) => {
+        const node = findNode(graph, nodeId);
+        assert(node, `Node id ${nodeId} not found`);
+        node.weight = weight;
+      })
+    );
 
     network.unselectAll();
     setSelectedNodes([]);
   };
 
-  const clear = () => {
-    nodes.clear();
-    edges.clear();
-    setGraph([]);
-    setSelectedEdges([]);
-    setSelectedNodes([]);
-  };
-
-  const sortGraph = (sortType: string) => {
-    console.log("sortType", sortType);
-
-    if (sortType === "critTime") {
-      return ([...graph]) => {
-        function time(node: GraphNode): number {
-          const childrenTimes = node.children.map((id) => {
-            const child = findNode(graph, id);
-            assert(child, `Child node id ${id} not found`);
-            return time(child);
-          });
-          return node.weight + Math.min(...childrenTimes, 0);
-        }
-        console.log("unsorted graph", graph);
-
-        graph.sort((a, b) => {
-          return time(b) - time(a);
-        });
-        console.log("sorted graph", graph);
-
-        return graph;
-      };
-    }
-
-    if (sortType === "critPathFirstThenDescCritPathCount") {
-      return ([...graph]) => {
-        function findPaths(node: GraphNode): GraphNode[][] {
-          const paths = [];
-          if (node.children.length === 0) {
-            return [[node]];
-          }
-
-          for (const id of node.children) {
-            const child = findNode(graph, id);
-            assert(child, `Child node id ${id} not found`);
-            const childPaths = findPaths(child);
-            for (const path of childPaths) {
-              paths.push([node, ...path]);
-            }
-          }
-
-          return paths;
-        }
-        const criticalPath = findPaths(graph[0]).reduce((acc, path) => {
-          if (path.length > acc.length) {
-            return path;
-          }
-          return acc;
-        });
-
-        function count(node: GraphNode): number {
-          const childrenCounts = node.children.map((id, i) => {
-            const child = findNode(graph, id);
-            assert(child, `Child node id ${id} not found`);
-            return count(child);
-          });
-          return 1 + Math.max(...childrenCounts);
-        }
-
-        graph.sort((a, b) => {
-          if (criticalPath.includes(a) && !criticalPath.includes(b)) {
-            return -1;
-          }
-          if (!criticalPath.includes(a) && criticalPath.includes(b)) {
-            return 1;
-          }
-          return count(b) - count(a);
-        });
-
-        return graph;
-      };
-    }
-
-    if (sortType === "weightDescending") {
-      return ([...graph]) => {
-        graph.sort((a, b) => {
-          return b.weight - a.weight;
-        });
-        return graph;
-      };
-    }
-    throw new Error(`Unknown sort type: ${sortType}`);
-  };
+  const clear = () =>
+    batch(() => {
+      nodes.clear();
+      edges.clear();
+      setGraph([]);
+      setSelectedEdges([]);
+      setSelectedNodes([]);
+    });
 
   const _setWeight = () => {
     const isEdgeWeight = !!selectedEdges().length;
     const setter = isEdgeWeight ? setEdgeWeight : setNodeWeight;
     setter(weight());
     setWeightModal(false);
+    setWeight(0);
   };
+
+  const cancelModal = () =>
+    batch(() => {
+      const isEdgeWeight = !!selectedEdges().length;
+      setWeightModal(false);
+      if (isEdgeWeight) removeEdge();
+      else removeNode();
+    });
 
   const load = async () => {
     const file = await new Promise<File>((resolve) => {
@@ -372,57 +403,91 @@ export default function GraphEditor(props: Props) {
     URL.revokeObjectURL(url);
   };
 
+  createShortcut(["Control", "A"], addNode);
+  createShortcut(["Control", "Alt", "A"], addEdge);
+  createShortcut(["Delete"], removeSelection);
+  createShortcut(["Control", "C"], clear);
+  createShortcut(["Control", "S"], save);
+  createShortcut(["Control", "O"], load);
+
   return (
-    <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
-      <div style={{ display: "flex", "flex-direction": "row", gap: "8px" }}>
-        <button onClick={save} style={{ height: "24px" }}>
+    <div class="flex flex-col gap-2">
+      <div class="flex flex-row gap-2 items-center">
+        <button class="h-6" onClick={save}>
           <AiOutlineSave size={24} />
         </button>
-        <button onClick={load} style={{ height: "24px" }}>
+        <button class="h-6" onClick={load}>
           <AiOutlineUpload size={24} />
         </button>
-        <button onClick={addNode}>add node</button>
-        <button onClick={removeNode}>delete nodes</button>
-        <button onClick={addEdge}>add edge</button>
-        <button onClick={removeEdge}>delete edges</button>
-        <button onClick={clear}>clear</button>
+        <Button onClick={addNode}>add node (ctrl+a)</Button>
+        <Button onClick={removeSelection}>delete (delete)</Button>
+        <Button onClick={addEdge}>add edge (ctrl+alt+a)</Button>
+        <Button onClick={clear}>clear (ctrl+c)</Button>
       </div>
-      <div style={{ display: "flex", "flex-direction": "row", gap: "8px" }}>
-        <div>Acyclic: {_isAcyclic().toString()}</div>
-        <div>Connected: {_isConnected().toString()}</div>
+      <div class="flex flex-row gap-2">
+        <div>Ациклічний: {_isAcyclic().toString()}</div>
+        <div>Зв'язний: {_isConnected().toString()}</div>
       </div>
-      {/* <select value={sorting()} onChange={(e) => setSorting(e.target.value)}> */}
-      <select onChange={(e) => setGraph(sortGraph(e.target.value))}>
-        <option value="critTime">Сортування по критичному часу по спаданню</option>
-        <option value="critPathFirstThenDescCritPathCount">
-          Sort by Critical Path First, then by Critical Path Count (Descending)
+      <select
+        class="transition-all border-gray-200 border border-solid rounded w-[600px] hover:border-gray-300"
+        onChange={(e) => setSorting(Number(e.target.value))}
+      >
+        <option value={SortingAlgorithm.CRIT_TIME}>Сортування по критичному часу по спаданню</option>
+        <option value={SortingAlgorithm.CRIT_PATH_FIRST_THEN_DESC_CRIT_PATH_COUNT}>
+          Сортування за критичним шляхом, потім за довжиною критичного шляху по спаданню
         </option>
-        <option value="weightDescending">Сортування за вагою по спаданню</option>
+        <option value={SortingAlgorithm.WEIGHT_DESCENDING}>Сортування за вагою по спаданню</option>
       </select>
       <div>
         <span>Sorted: </span>
         {graphOrder()}
       </div>
       <dialog
-        open={weightModal()}
-        style={weightModal() ? { display: "flex", "flex-direction": "column", gap: "8px" } : {}}
-      >
-        <div style={{ display: "flex", "flex-direction": "row", gap: "8px" }}>
-          Weight:
-          <input type="number" value={weight()} onInput={(e) => setWeight(Number(e.currentTarget.value))} />
-        </div>
-        <button onClick={() => setWeightModal(false)}>Cancel</button>
-        <button onClick={_setWeight}>Set Weight</button>
-      </dialog>
-      <div
-        ref={ref}
-        style={{
-          width: "100%",
-          height: "600px",
-          border: "1px solid lightgray",
-          background: "white",
+        ref={(el) => {
+          if (!el) return;
+          el.addEventListener("cancel", cancelModal);
+          createEffect(() => {
+            if (!el) return;
+            if (weightModal()) el.showModal();
+            else el.close();
+          });
         }}
-      />
+        class={
+          weightModal()
+            ? `py-2 px-4 flex flex-col gap-2 border-gray-400 border border-solid rounded backdrop:bg-black backdrop:opacity-10`
+            : ""
+        }
+      >
+        <div class="flex flex-col gap-2">
+          Weight:
+          <input
+            class="border-gray-200 px-2 py-1 border border-solid rounded hover:border-gray-300"
+            type="number"
+            ref={(el) => {
+              if (!el) return;
+              createEffect(() => {
+                if (!el || !weightModal()) return;
+                el.focus();
+              });
+            }}
+            value={weight()}
+            onInput={(e) => setWeight(Number(e.currentTarget.value))}
+            onKeyDown={(e) => e.key === "Enter" && _setWeight()}
+          />
+        </div>
+        <Button onClick={cancelModal}>Cancel</Button>
+        <Button onClick={_setWeight}>Set Weight</Button>
+      </dialog>
+      <div ref={ref} class="w-full h-[600px] border border-solid rounded-md border-gray-400 bg-white" />
     </div>
+  );
+}
+function Button(props: ComponentProps<"button">) {
+  const _class = () => (props.class ? " " + props.class : "");
+  return (
+    <button
+      class={"border-gray-200 border border-solid rounded hover:border-gray-300 py-1 px-2" + _class()}
+      {...props}
+    />
   );
 }

@@ -11,7 +11,7 @@ export enum TaskType {
 export interface Task {
   id: number;
   weight: number;
-  type: TaskType;
+  // type: TaskType;
 
   edgeWeights: number[];
   children: number[];

@@ -19,34 +19,30 @@ export function findNode(graph: Graph, id: number) {
 }
 
 let nextId = 0;
-export function uniqueId(): number {
-  return nextId++;
+export function uniqueId(from = nextId): number {
+  nextId = from + 1;
+  return from;
 }
 
 export function isAcyclic(graph: Graph) {
   if (graph.length === 0) return true;
 
-  const previous = new Set<number>();
+  const checked = new Set<GraphNode>();
 
-  function search(node: GraphNode) {
-    previous.add(node.id);
+  function check(node: GraphNode, path: number[] = []): boolean {
+    if (checked.has(node)) return true;
+    if (path.includes(node.id)) return false;
+    const hasNoCycle = node.children.every((childId) => {
+      const child = findNode(graph, childId);
+      assert(child, `Child node id ${childId} not found`);
+      return check(child, [...path, node.id]);
+    });
+    if (hasNoCycle) checked.add(node);
 
-    let isAcyclic = true;
-    for (let child of node.children) {
-      const childNode = findNode(graph, child);
-      assert(childNode, `Child node id ${child} not found`);
-      if (previous.has(child) || search(childNode)) {
-        isAcyclic = false;
-        break;
-      }
-    }
-
-    previous.delete(node.id);
-
-    return isAcyclic;
+    return hasNoCycle;
   }
 
-  return search(graph[0]);
+  return graph.every((node) => check(node));
 }
 
 export function isConnected(graph: Graph) {

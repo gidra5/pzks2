@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@solid-primitives/keyboard": "^1.2.8",
     "@solidjs/router": "^0.13.5",
     "immer": "^10.1.1",
     "solid-icons": "^1.1.0",

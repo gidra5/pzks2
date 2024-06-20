@@ -3,27 +3,8 @@ import * as styles from "./App.module.css";
 
 function App(props: { children?: any }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        "flex-direction": "column",
-        gap: "8px",
-        padding: "8px",
-        width: "100vw",
-        height: "100vh",
-        // background: "#333",
-      }}
-    >
-      <div
-        style={{
-          "font-size": "24px",
-          width: "100%",
-          display: "flex",
-          "flex-direction": "row",
-          gap: "8px",
-          "justify-content": "center",
-        }}
-      >
+    <div class="flex flex-col gap-2 p-2 w-screen h-screen">
+      <div class="flex flex-row gap-4 justify-center w-full text-2xl">
         <A inactiveClass={styles.inactive} activeClass={styles.active} href="/task">
           Граф задачі
         </A>
@@ -34,7 +15,7 @@ function App(props: { children?: any }) {
           Статистика
         </A>
       </div>
-      <div style={{ flex: 1, width: "100%", "min-height": 0 }}>{props.children}</div>
+      <div class="flex-1 w-full min-h-0">{props.children}</div>
     </div>
   );
 }
