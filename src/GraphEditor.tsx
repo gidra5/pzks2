@@ -1,12 +1,26 @@
-import { batch, createEffect, createMemo, createSignal, type ComponentProps } from "solid-js";
+import {
+  batch,
+  createEffect,
+  createMemo,
+  createSignal,
+  type ComponentProps,
+} from "solid-js";
 import { type Edge, type Node } from "vis-network";
 import { Network } from "vis-network/esnext";
 import { DataSet } from "vis-network/standalone";
 import "vis-network/styles/vis-network.css";
-import { assert, findNode, isAcyclic, isConnected, uniqueId, type Graph, type GraphNode } from "./utils";
+import {
+  assert,
+  findNode,
+  isAcyclic,
+  isConnected,
+  uniqueId,
+  type Graph,
+  type GraphNode,
+} from "./utils";
 import { AiOutlineSave, AiOutlineUpload } from "solid-icons/ai";
 import { createShortcut } from "@solid-primitives/keyboard";
-import { produce } from "immer";
+import { current, produce } from "immer";
 
 type Props = {
   directed?: boolean;
@@ -19,15 +33,23 @@ enum SortingAlgorithm {
   WEIGHT_DESCENDING,
 }
 
-const sortGraph = (sortType: SortingAlgorithm, graph: Graph) => {
-  if (sortType === SortingAlgorithm.CRIT_TIME) {
-    sortGraphByCritTime(graph);
-  } else if (sortType === SortingAlgorithm.CRIT_PATH_FIRST_THEN_DESC_CRIT_PATH_COUNT) {
-    sortGraphByCriticalPath(graph);
-  } else if (sortType === SortingAlgorithm.WEIGHT_DESCENDING) {
-    sortGraphByWeight(graph);
-  }
-};
+const sortGraph =
+  (connected: boolean, acyclic: boolean, sortType: SortingAlgorithm) =>
+  (graph: Graph) => {
+    console.log("sortGraph", connected, acyclic, sortType, current(graph));
+
+    if (acyclic && sortType === SortingAlgorithm.CRIT_TIME) {
+      sortGraphByCritTime(graph);
+    } else if (
+      acyclic &&
+      sortType === SortingAlgorithm.CRIT_PATH_FIRST_THEN_DESC_CRIT_PATH_COUNT
+    ) {
+      sortGraphByCriticalPath(graph);
+    } else if (sortType === SortingAlgorithm.WEIGHT_DESCENDING) {
+      sortGraphByWeight(graph);
+    }
+    console.log("sortGraph 2", connected, acyclic, sortType, current(graph));
+  };
 
 function sortGraphByWeight(graph: Graph) {
   graph.sort((a, b) => {
@@ -62,7 +84,7 @@ function sortGraphByCriticalPath(graph: Graph) {
   });
 
   function count(node: GraphNode): number {
-    const childrenCounts = node.children.map((id, i) => {
+    const childrenCounts = node.children.map((id) => {
       const child = findNode(graph, id);
       assert(child, `Child node id ${id} not found`);
       return count(child);
@@ -112,7 +134,9 @@ export default function GraphEditor(props: Props) {
   const _isConnected = createMemo(() => isConnected(graph()));
 
   const [sorting, setSorting] = createSignal(SortingAlgorithm.CRIT_TIME);
-  const sortedGraph = createMemo(() => produce(graph(), (graph) => void (_isAcyclic() && sortGraph(sorting(), graph))));
+  const sortedGraph = createMemo(() =>
+    produce(graph(), sortGraph(_isConnected(), _isAcyclic(), sorting()))
+  );
   const graphOrder = createMemo(() =>
     sortedGraph()
       .map(({ id }) => id)
@@ -156,7 +180,16 @@ export default function GraphEditor(props: Props) {
         smooth: {
           enabled: true,
           type: "curvedCW",
-          roundness: 0.2,
+          roundness: 0.4,
+        },
+        scaling: {
+          min: 1,
+          max: 1,
+          label: {
+            enabled: true,
+            min: 14,
+            max: 14,
+          },
         },
       },
     };
@@ -168,23 +201,35 @@ export default function GraphEditor(props: Props) {
       setSelectedNodes(nodes);
     });
     network.on("deselectNode", ({ nodes }) => {
-      setSelectedNodes((selectedNodes) => selectedNodes.filter((id) => !nodes.includes(id)));
+      setSelectedNodes((selectedNodes) =>
+        selectedNodes.filter((id) => !nodes.includes(id))
+      );
     });
     network.on("selectEdge", ({ edges }) => {
       setSelectedEdges(edges);
     });
     network.on("deselectEdge", ({ edges }) => {
-      setSelectedEdges((selectedEdges) => selectedEdges.filter((id) => !edges.includes(id)));
+      setSelectedEdges((selectedEdges) =>
+        selectedEdges.filter((id) => !edges.includes(id))
+      );
     });
 
-    nodes.on("add", (_, properties, senderId) => {
-      const ids = properties?.items.filter((id): id is string | number => id !== undefined && id !== null);
+    nodes.on("add", (_, properties) => {
+      const ids = properties?.items.filter(
+        (id): id is string | number => id !== undefined && id !== null
+      );
       if (!ids) return;
-      const nodes = ids.map((id) => ({ id: Number(id), weight: 0, edgeWeights: [], parents: [], children: [] }));
-      setGraph((graph) => [...graph, ...nodes]);
+      const _nodes = ids.map((id) => ({
+        id: Number(id),
+        weight: nodes.get(id)?.value ?? 0,
+        edgeWeights: [],
+        parents: [],
+        children: [],
+      }));
+      setGraph((graph) => [...graph, ..._nodes]);
     });
 
-    nodes.on("remove", (_, properties, senderId) => {
+    nodes.on("remove", (_, properties) => {
       const ids = properties?.items;
       if (!ids) return;
       if (ids.length === 0) return;
@@ -192,10 +237,60 @@ export default function GraphEditor(props: Props) {
       setGraph((graph) => graph.filter((node) => !ids.includes(node.id)));
     });
 
-    nodes.on("update", (_, properties, senderId) => {});
+    nodes.on("update", (_, properties) => {
+      const _nodes = properties?.items;
 
-    edges.on("add", (_, properties, senderId) => {
-      const ids = properties?.items.filter((id): id is string | number => id !== undefined && id !== null);
+      if (!_nodes) return;
+      if (_nodes.length === 0) return;
+
+      setGraph(
+        produce((graph) => {
+          for (const nodeId of _nodes) {
+            const node = nodes.get(nodeId);
+            if (!node) continue;
+            const { id, value: weight } = node;
+            if (typeof id !== "number") continue;
+            if (weight === undefined) continue;
+
+            const _node = findNode(graph, id);
+            assert(_node, `Node id ${id} not found`);
+            _node.weight = weight;
+          }
+        })
+      );
+    });
+
+    edges.on("update", (_, properties) => {
+      const _edges = properties?.items;
+      if (!_edges) return;
+      if (_edges.length === 0) return;
+
+      setGraph(
+        produce((graph) => {
+          for (const edgeId of _edges) {
+            const edge = edges.get(edgeId);
+            if (!edge) continue;
+            const { from, to, value: weight } = edge;
+            if (typeof from !== "number" || typeof to !== "number") continue;
+            if (weight === undefined) continue;
+
+            const fromNode = findNode(graph, from);
+            assert(fromNode, `From node id ${from} not found`);
+            const childIndex = fromNode.children.indexOf(to);
+            assert(
+              childIndex !== -1,
+              `Child node id ${to} not found in from node ${from}`
+            );
+            fromNode.edgeWeights[childIndex] = weight;
+          }
+        })
+      );
+    });
+
+    edges.on("add", (_, properties) => {
+      const ids = properties?.items.filter(
+        (id): id is string | number => id !== undefined && id !== null
+      );
       if (!ids) return;
 
       setGraph(
@@ -213,6 +308,8 @@ export default function GraphEditor(props: Props) {
             fromNode.children.push(toNode.id);
             toNode.parents.push(fromNode.id);
 
+            fromNode.edgeWeights.push(edge.value ?? 0);
+
             if (directed()) continue;
 
             toNode.children.push(fromNode.id);
@@ -222,7 +319,7 @@ export default function GraphEditor(props: Props) {
       );
     });
 
-    edges.on("remove", (_, properties, senderId) => {
+    edges.on("remove", (_, properties) => {
       const edges = properties?.oldData;
       if (!edges) return;
       if (edges.length === 0) return;
@@ -239,13 +336,19 @@ export default function GraphEditor(props: Props) {
             const toNode = findNode(graph, Number(toId));
             if (!fromNode || !toNode) continue;
 
-            fromNode.children = fromNode.children.filter((id) => id !== toNode.id);
+            fromNode.children = fromNode.children.filter(
+              (id) => id !== toNode.id
+            );
             toNode.parents = toNode.parents.filter((id) => id !== fromNode.id);
 
             if (directed()) continue;
 
-            toNode.children = toNode.children.filter((id) => id !== fromNode.id);
-            fromNode.parents = fromNode.parents.filter((id) => id !== toNode.id);
+            toNode.children = toNode.children.filter(
+              (id) => id !== fromNode.id
+            );
+            fromNode.parents = fromNode.parents.filter(
+              (id) => id !== toNode.id
+            );
           }
         })
       );
@@ -271,7 +374,9 @@ export default function GraphEditor(props: Props) {
       if (_nodes.length === 0) return;
 
       for (const nodeId of _nodes) {
-        const edgesToRemove = edges.get().filter(({ from, to }) => from === nodeId || to === nodeId);
+        const edgesToRemove = edges
+          .get()
+          .filter(({ from, to }) => from === nodeId || to === nodeId);
         edges.remove(edgesToRemove.map(({ id }) => id));
       }
       nodes.remove(_nodes);
@@ -318,34 +423,15 @@ export default function GraphEditor(props: Props) {
     const { from, to } = edge;
     assert(typeof from === "number", `From node id ${from} is not a number`);
     assert(typeof to === "number", `To node id ${to} is not a number`);
-
-    edges.update({ id, arrows: "to", value: weight, label: String(weight) });
-    setGraph(
-      produce((graph) => {
-        const fromNode = findNode(graph, from);
-        assert(fromNode, `From node id ${from} not found`);
-        const childIndex = fromNode.children.indexOf(to);
-        assert(childIndex !== -1, `Child node id ${to} not found in from node ${from}`);
-        fromNode.edgeWeights[childIndex] = weight;
-      })
-    );
-
+    edges.update({ id, value: weight, arrows: "to", label: String(weight) });
     network.unselectAll();
     setSelectedNodes([]);
     setSelectedEdges([]);
   };
 
   const setNodeWeight = (weight: number) => {
-    const [nodeId] = selectedNodes();
-    nodes.update({ id: nodeId, value: weight, label: `${nodeId} (${weight})` });
-    setGraph(
-      produce((graph) => {
-        const node = findNode(graph, nodeId);
-        assert(node, `Node id ${nodeId} not found`);
-        node.weight = weight;
-      })
-    );
-
+    const [id] = selectedNodes();
+    nodes.update({ id, value: weight, label: `${id} (${weight})` });
     network.unselectAll();
     setSelectedNodes([]);
   };
@@ -403,12 +489,12 @@ export default function GraphEditor(props: Props) {
     URL.revokeObjectURL(url);
   };
 
-  createShortcut(["Control", "A"], addNode);
+  createShortcut(["Alt", "A"], addNode);
   createShortcut(["Control", "Alt", "A"], addEdge);
   createShortcut(["Delete"], removeSelection);
-  createShortcut(["Control", "C"], clear);
-  createShortcut(["Control", "S"], save);
-  createShortcut(["Control", "O"], load);
+  createShortcut(["Alt", "C"], clear);
+  createShortcut(["Alt", "S"], save);
+  createShortcut(["Alt", "O"], load);
 
   return (
     <div class="flex flex-col gap-2">
@@ -419,10 +505,10 @@ export default function GraphEditor(props: Props) {
         <button class="h-6" onClick={load}>
           <AiOutlineUpload size={24} />
         </button>
-        <Button onClick={addNode}>add node (ctrl+a)</Button>
+        <Button onClick={addNode}>add node (alt+a)</Button>
         <Button onClick={removeSelection}>delete (delete)</Button>
         <Button onClick={addEdge}>add edge (ctrl+alt+a)</Button>
-        <Button onClick={clear}>clear (ctrl+c)</Button>
+        <Button onClick={clear}>clear (alt+c)</Button>
       </div>
       <div class="flex flex-row gap-2">
         <div>Ациклічний: {_isAcyclic().toString()}</div>
@@ -432,11 +518,18 @@ export default function GraphEditor(props: Props) {
         class="transition-all border-gray-200 border border-solid rounded w-[600px] hover:border-gray-300"
         onChange={(e) => setSorting(Number(e.target.value))}
       >
-        <option value={SortingAlgorithm.CRIT_TIME}>Сортування по критичному часу по спаданню</option>
-        <option value={SortingAlgorithm.CRIT_PATH_FIRST_THEN_DESC_CRIT_PATH_COUNT}>
-          Сортування за критичним шляхом, потім за довжиною критичного шляху по спаданню
+        <option value={SortingAlgorithm.CRIT_TIME}>
+          Сортування по критичному часу по спаданню
         </option>
-        <option value={SortingAlgorithm.WEIGHT_DESCENDING}>Сортування за вагою по спаданню</option>
+        <option
+          value={SortingAlgorithm.CRIT_PATH_FIRST_THEN_DESC_CRIT_PATH_COUNT}
+        >
+          Сортування за критичним шляхом, потім за довжиною критичного шляху по
+          спаданню
+        </option>
+        <option value={SortingAlgorithm.WEIGHT_DESCENDING}>
+          Сортування за вагою по спаданню
+        </option>
       </select>
       <div>
         <span>Sorted: </span>
@@ -478,15 +571,22 @@ export default function GraphEditor(props: Props) {
         <Button onClick={cancelModal}>Cancel</Button>
         <Button onClick={_setWeight}>Set Weight</Button>
       </dialog>
-      <div ref={ref} class="w-full h-[600px] border border-solid rounded-md border-gray-400 bg-white" />
+      <div
+        ref={ref}
+        class="w-full h-[600px] border border-solid rounded-md border-gray-400 bg-white"
+      />
     </div>
   );
 }
+
 function Button(props: ComponentProps<"button">) {
   const _class = () => (props.class ? " " + props.class : "");
   return (
     <button
-      class={"border-gray-200 border border-solid rounded hover:border-gray-300 py-1 px-2" + _class()}
+      class={
+        "border-gray-200 border border-solid rounded hover:border-gray-300 py-1 px-2" +
+        _class()
+      }
       {...props}
     />
   );
