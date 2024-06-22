@@ -1,7 +1,13 @@
+import { DataSet } from "vis-network/standalone";
+import { type Edge, type Node } from "vis-network";
 import GraphEditor from "./GraphEditor";
 import { Show, createSignal } from "solid-js";
+import { useStore } from "./store";
 
 export default function Worker() {
+  const nodes: DataSet<Node> = new DataSet([]);
+  const edges: DataSet<Edge> = new DataSet([]);
+  const setWorkers = useStore((state) => state.setWorker);
   const [communication, setCommunication] = createSignal("messaging");
   return (
     <div style={{ display: "flex", "flex-direction": "column", gap: "8px", width: "100%" }}>
@@ -24,7 +30,7 @@ export default function Worker() {
         <div style={{ background: "#222" }}>active</div>
         <div style={{ background: "#fff" }}>inactive</div>
       </div> */}
-      <GraphEditor />
+      <GraphEditor nodes={nodes} edges={edges} onChange={setWorkers} />
     </div>
   );
 }

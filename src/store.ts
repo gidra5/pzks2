@@ -20,8 +20,8 @@ export interface Task {
 
 export interface StateWorker {
   id: number;
-  name: string;
-  types: TaskType[];
+  // name: string;
+  // types: TaskType[];
 
   children: number[];
   parents: number[];
