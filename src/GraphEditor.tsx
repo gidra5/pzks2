@@ -23,6 +23,8 @@ import { createShortcut } from "@solid-primitives/keyboard";
 import { current, produce } from "immer";
 
 type Props = {
+  nodes: DataSet<Node>;
+  edges: DataSet<Edge>;
   directed?: boolean;
   onChange?: (value: Graph) => void;
 };
@@ -33,23 +35,18 @@ enum SortingAlgorithm {
   WEIGHT_DESCENDING,
 }
 
-const sortGraph =
-  (connected: boolean, acyclic: boolean, sortType: SortingAlgorithm) =>
-  (graph: Graph) => {
-    console.log("sortGraph", connected, acyclic, sortType, current(graph));
+const sortGraph = (connected: boolean, acyclic: boolean, sortType: SortingAlgorithm) => (graph: Graph) => {
+  console.log("sortGraph", connected, acyclic, sortType, current(graph));
 
-    if (acyclic && sortType === SortingAlgorithm.CRIT_TIME) {
-      sortGraphByCritTime(graph);
-    } else if (
-      acyclic &&
-      sortType === SortingAlgorithm.CRIT_PATH_FIRST_THEN_DESC_CRIT_PATH_COUNT
-    ) {
-      sortGraphByCriticalPath(graph);
-    } else if (sortType === SortingAlgorithm.WEIGHT_DESCENDING) {
-      sortGraphByWeight(graph);
-    }
-    console.log("sortGraph 2", connected, acyclic, sortType, current(graph));
-  };
+  if (acyclic && sortType === SortingAlgorithm.CRIT_TIME) {
+    sortGraphByCritTime(graph);
+  } else if (acyclic && sortType === SortingAlgorithm.CRIT_PATH_FIRST_THEN_DESC_CRIT_PATH_COUNT) {
+    sortGraphByCriticalPath(graph);
+  } else if (sortType === SortingAlgorithm.WEIGHT_DESCENDING) {
+    sortGraphByWeight(graph);
+  }
+  console.log("sortGraph 2", connected, acyclic, sortType, current(graph));
+};
 
 function sortGraphByWeight(graph: Graph) {
   graph.sort((a, b) => {
@@ -57,61 +54,83 @@ function sortGraphByWeight(graph: Graph) {
   });
 }
 
-function sortGraphByCriticalPath(graph: Graph) {
-  function findPaths(node: GraphNode): GraphNode[][] {
-    const paths = [];
-    if (node.children.length === 0) {
-      return [[node]];
+function getCriticalPath(graph: Graph): number[] {
+  const criticalPaths: Record<number, number[]> = {};
+  function critPath(node: GraphNode): number[] {
+    if (node.id in criticalPaths) {
+      return criticalPaths[node.id];
     }
 
-    for (const id of node.children) {
+    const childrenPaths = node.children.map((id) => {
       const child = findNode(graph, id);
       assert(child, `Child node id ${id} not found`);
-      const childPaths = findPaths(child);
-      for (const path of childPaths) {
-        paths.push([node, ...path]);
-      }
-    }
-
-    return paths;
+      return critPath(child);
+    });
+    childrenPaths.sort((a, b) => b.length - a.length);
+    const maxPath = childrenPaths[0] ?? [];
+    const _path = [node.id, ...maxPath];
+    criticalPaths[node.id] = _path;
+    return _path;
   }
 
-  const criticalPath = findPaths(graph[0]).reduce((acc, path) => {
-    if (path.length > acc.length) {
-      return path;
-    }
-    return acc;
-  });
+  const paths = graph.map((node) => critPath(node));
+  paths.sort((a, b) => b.length - a.length);
+  return paths[0] ?? [];
+}
 
+function sortGraphByCriticalPath(graph: Graph) {
+  const criticalPath = getCriticalPath(graph);
+  const criticalCounts: Record<number, number> = {};
   function count(node: GraphNode): number {
-    const childrenCounts = node.children.map((id) => {
+    if (criticalCounts[node.id]) {
+      return criticalCounts[node.id];
+    }
+
+    const childrenTimes = node.children.map((id) => {
       const child = findNode(graph, id);
       assert(child, `Child node id ${id} not found`);
       return count(child);
     });
-    return 1 + Math.max(...childrenCounts);
+    const _time = 1 + Math.max(...childrenTimes, 0);
+    criticalCounts[node.id] = _time;
+    return _time;
+  }
+
+  function critPath(node: GraphNode): number {
+    if (criticalPath.includes(node.id)) {
+      return 1;
+    }
+
+    return 0;
   }
 
   graph.sort((a, b) => {
-    if (criticalPath.includes(a) && !criticalPath.includes(b)) {
-      return -1;
-    }
-    if (!criticalPath.includes(a) && criticalPath.includes(b)) {
-      return 1;
+    const critPathA = critPath(a);
+    const critPathB = critPath(b);
+    if (critPathA !== 0 || critPathB !== 0) {
+      return critPathB - critPathA;
     }
     return count(b) - count(a);
   });
 }
 
 function sortGraphByCritTime(graph: Graph) {
+  const criticalTimes: Record<number, number> = {};
   function time(node: GraphNode): number {
+    if (criticalTimes[node.id]) {
+      return criticalTimes[node.id];
+    }
+
     const childrenTimes = node.children.map((id) => {
       const child = findNode(graph, id);
       assert(child, `Child node id ${id} not found`);
       return time(child);
     });
-    return node.weight + Math.min(...childrenTimes, 0);
+    const _time = node.weight + Math.max(...childrenTimes, 0);
+    criticalTimes[node.id] = _time;
+    return _time;
   }
+
   graph.sort((a, b) => {
     return time(b) - time(a);
   });
@@ -119,11 +138,11 @@ function sortGraphByCritTime(graph: Graph) {
 
 export default function GraphEditor(props: Props) {
   const directed = () => props.directed ?? false;
+  const nodes = props.nodes;
+  const edges = props.edges;
 
   let ref: any;
   let network: Network;
-  let nodes: DataSet<Node>;
-  let edges: DataSet<Edge>;
 
   const [graph, setGraph] = createSignal<Graph>([]);
   createEffect(() => {
@@ -134,9 +153,7 @@ export default function GraphEditor(props: Props) {
   const _isConnected = createMemo(() => isConnected(graph()));
 
   const [sorting, setSorting] = createSignal(SortingAlgorithm.CRIT_TIME);
-  const sortedGraph = createMemo(() =>
-    produce(graph(), sortGraph(_isConnected(), _isAcyclic(), sorting()))
-  );
+  const sortedGraph = createMemo(() => produce(graph(), sortGraph(_isConnected(), _isAcyclic(), sorting())));
   const graphOrder = createMemo(() =>
     sortedGraph()
       .map(({ id }) => id)
@@ -193,31 +210,23 @@ export default function GraphEditor(props: Props) {
         },
       },
     };
-    nodes = new DataSet([]);
-    edges = new DataSet([]);
     network = new Network(container, { nodes, edges }, options);
 
     network.on("selectNode", ({ nodes }) => {
       setSelectedNodes(nodes);
     });
     network.on("deselectNode", ({ nodes }) => {
-      setSelectedNodes((selectedNodes) =>
-        selectedNodes.filter((id) => !nodes.includes(id))
-      );
+      setSelectedNodes((selectedNodes) => selectedNodes.filter((id) => !nodes.includes(id)));
     });
     network.on("selectEdge", ({ edges }) => {
       setSelectedEdges(edges);
     });
     network.on("deselectEdge", ({ edges }) => {
-      setSelectedEdges((selectedEdges) =>
-        selectedEdges.filter((id) => !edges.includes(id))
-      );
+      setSelectedEdges((selectedEdges) => selectedEdges.filter((id) => !edges.includes(id)));
     });
 
     nodes.on("add", (_, properties) => {
-      const ids = properties?.items.filter(
-        (id): id is string | number => id !== undefined && id !== null
-      );
+      const ids = properties?.items.filter((id): id is string | number => id !== undefined && id !== null);
       if (!ids) return;
       const _nodes = ids.map((id) => ({
         id: Number(id),
@@ -277,10 +286,7 @@ export default function GraphEditor(props: Props) {
             const fromNode = findNode(graph, from);
             assert(fromNode, `From node id ${from} not found`);
             const childIndex = fromNode.children.indexOf(to);
-            assert(
-              childIndex !== -1,
-              `Child node id ${to} not found in from node ${from}`
-            );
+            assert(childIndex !== -1, `Child node id ${to} not found in from node ${from}`);
             fromNode.edgeWeights[childIndex] = weight;
           }
         })
@@ -288,9 +294,7 @@ export default function GraphEditor(props: Props) {
     });
 
     edges.on("add", (_, properties) => {
-      const ids = properties?.items.filter(
-        (id): id is string | number => id !== undefined && id !== null
-      );
+      const ids = properties?.items.filter((id): id is string | number => id !== undefined && id !== null);
       if (!ids) return;
 
       setGraph(
@@ -336,19 +340,13 @@ export default function GraphEditor(props: Props) {
             const toNode = findNode(graph, Number(toId));
             if (!fromNode || !toNode) continue;
 
-            fromNode.children = fromNode.children.filter(
-              (id) => id !== toNode.id
-            );
+            fromNode.children = fromNode.children.filter((id) => id !== toNode.id);
             toNode.parents = toNode.parents.filter((id) => id !== fromNode.id);
 
             if (directed()) continue;
 
-            toNode.children = toNode.children.filter(
-              (id) => id !== fromNode.id
-            );
-            fromNode.parents = fromNode.parents.filter(
-              (id) => id !== toNode.id
-            );
+            toNode.children = toNode.children.filter((id) => id !== fromNode.id);
+            fromNode.parents = fromNode.parents.filter((id) => id !== toNode.id);
           }
         })
       );
@@ -374,9 +372,7 @@ export default function GraphEditor(props: Props) {
       if (_nodes.length === 0) return;
 
       for (const nodeId of _nodes) {
-        const edgesToRemove = edges
-          .get()
-          .filter(({ from, to }) => from === nodeId || to === nodeId);
+        const edgesToRemove = edges.get().filter(({ from, to }) => from === nodeId || to === nodeId);
         edges.remove(edgesToRemove.map(({ id }) => id));
       }
       nodes.remove(_nodes);
@@ -518,18 +514,11 @@ export default function GraphEditor(props: Props) {
         class="transition-all border-gray-200 border border-solid rounded w-[600px] hover:border-gray-300"
         onChange={(e) => setSorting(Number(e.target.value))}
       >
-        <option value={SortingAlgorithm.CRIT_TIME}>
-          Сортування по критичному часу по спаданню
+        <option value={SortingAlgorithm.CRIT_TIME}>Сортування по критичному часу по спаданню</option>
+        <option value={SortingAlgorithm.CRIT_PATH_FIRST_THEN_DESC_CRIT_PATH_COUNT}>
+          Сортування за критичним шляхом, потім за довжиною критичного шляху по спаданню
         </option>
-        <option
-          value={SortingAlgorithm.CRIT_PATH_FIRST_THEN_DESC_CRIT_PATH_COUNT}
-        >
-          Сортування за критичним шляхом, потім за довжиною критичного шляху по
-          спаданню
-        </option>
-        <option value={SortingAlgorithm.WEIGHT_DESCENDING}>
-          Сортування за вагою по спаданню
-        </option>
+        <option value={SortingAlgorithm.WEIGHT_DESCENDING}>Сортування за вагою по спаданню</option>
       </select>
       <div>
         <span>Sorted: </span>
@@ -571,10 +560,7 @@ export default function GraphEditor(props: Props) {
         <Button onClick={cancelModal}>Cancel</Button>
         <Button onClick={_setWeight}>Set Weight</Button>
       </dialog>
-      <div
-        ref={ref}
-        class="w-full h-[600px] border border-solid rounded-md border-gray-400 bg-white"
-      />
+      <div ref={ref} class="w-full h-[600px] border border-solid rounded-md border-gray-400 bg-white" />
     </div>
   );
 }
